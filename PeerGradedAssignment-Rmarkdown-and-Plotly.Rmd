@@ -1,0 +1,219 @@
+---
+title: |
+    | Peer Graded Assignment <br /> R markdown presentation and Plotly
+author: "RLC Velhorst"
+date: "15-5-2020"
+output: ioslides_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(plotly)
+library(dplyr)
+set.seed(101)
+
+```
+
+
+# Sea level rise in the Netherlands | Developing Data Products Assignment Week 3
+
+This document is the report of the Peer Assessment project of week 2 from Coursera’s course Developing Data Products, as part of the Specialization in Data Science by John Hopkins University. It was built in RStudio, using its knitr functions. 
+
+## Project Goal  
+
+Demonstrate skills:  
+
+* R markdown presentation  
+* Plotly interactive plot  
+
+
+## Data: Publicly Available Tide Stations
+
+The specific data in this exercise shows historical sea level in the Netherlands.  
+
+The data used for this assignment originates from the Permanent Service for Mean Sea Level (PSMSL).
+PSMSL is the global data bank for long term sea level change information from tide gauges and bottom pressure recorders.
+
+This doument shows a selection of average sea level measurements in the Netherlands, which are stored in de publicly available data: tide gauge data [Holgate et al., 2013; PSMSL, 2020].
+
+
+```{r, comment=""}
+
+# data directory
+datadir <- "./data"
+if(!file.exists(datadir)){dir.create(datadir)}
+
+# download zipped data
+zipf = file.path(datadir, "rlr_annual.zip")
+if(!file.exists(zipf)){
+  fileUrl <- "https://www.psmsl.org/data/obtaining/year_end/2019/rlr_annual.zip"
+  download.file(fileUrl,destfile = zipf)
+  unzip(zipf,exdir="./data")
+}
+
+# file containing tide stations locations
+fn_data <- "rlr_annual/filelist.txt"
+dataf <-file.path(datadir, fn_data)
+
+# station data
+stations <- read.table(dataf, sep = ";",
+                       col.names = c('id', 'lat', 'lon', 'name', 'coastline_code', 'station_code', 'quality'),
+                       strip.white = TRUE
+                       )
+
+# Select stations in the Netherlands
+NL_coastline_code = 150
+stations.NL  <-stations[which(stations$coastline_code==NL_coastline_code),]
+
+head(stations.NL[,c('id', 'lat', 'lon', 'name')], 3)
+```
+## Dutch Sea Levels
+
+```{r warning=FALSE, message=FALSE, error=FALSE}
+
+# locate sea level data
+rlrdata_fp <- function(id){
+  # return file path of the sea level data
+  file.path('./data/rlr_annual/data', sprintf("%d.rlrdata",id))
+}
+rlrinfo_fp <- function(id){
+  # return file path of the local reference level info
+  file.path('./data/rlr_annual/RLR_info', sprintf("%d.txt",id))
+}
+
+rlr_correction_df <- function(id){
+  # return dataframe containing the RLR correction of a given station (identified by id)
+  # correction information is obtained from the rlr info file
+  # The dataframe contains three columns: year_start, year_end, and correction [mm]
+  
+  fp <- rlrinfo_fp(id)
+  linestr <- readLines(con <- file(fp))
+  close(con)
+  records <- strsplit(linestr,split="<br>")
+  words <- sapply(records, strsplit,split=" ")
+  
+  correction_df <- data.frame()
+  for(ix in 1:length(words)){
+    if(words[[ix]][1]=="Add"){
+      if('onwards' %in% words[[ix]]){
+        year_start <- as.integer(words[[ix]][6])
+        year_end <- as.integer(format(Sys.Date(), "%Y"))
+        correction <- as.numeric(strsplit(words[[ix]][2], "m")[1])*1000. # convert to mm
+      } else {
+        years = strsplit(words[[ix]][6], "-")
+        year_start <- as.integer(years[[1]][1])
+        year_end <- as.integer(years[[1]][2])
+        correction <- as.numeric(strsplit(words[[ix]][2], "m")[1])*1000. # convert to mm
+      }
+      df_tmp = data.frame("year_start"= year_start,
+                          "year_end"= year_end,
+                          "correction"= correction)
+      correction_df <- rbind(correction_df,df_tmp)
+    }
+  }
+  correction_df
+}
+
+getCorrection <- function(year, correction_df) {
+  # return the correction of a given year, based on the correction dataframe
+  tmp <- correction_df %>%
+    filter(year <= year_end, year >= year_start)
+  return(tmp$correction)
+}
+
+# NAP_convert
+rlr2nap <- function(df, id){
+  # Add a column "NAP" [mmm] to the sea level dataframe df
+  # NAP  is the national reference level in the Netherlands
+  # Conversion from RLR to NAP is based on RLR-info of a given station (identified by id)
+  correction_df <- rlr_correction_df(id)
+  RLR_correction <- sapply(as.vector(df$Year), getCorrection, correction_df)
+  return(mutate(df, NAP = RLR - RLR_correction))
+}
+
+
+# Create dataframe of all annual dutch sea levels
+# select station id's
+NLids = stations.NL$id
+# loop through all stations and merge data into one dataframe
+RLRdata.NL = data.frame()
+for(id in NLids){
+  station <- stations.NL[which(id==stations.NL$id),]
+  
+  df_tmp <- read.table(rlrdata_fp(id), sep =";", col.names= c("Year", "RLR", "Quality", "NUll")) %>% 
+      merge(station) %>% # add station information to dataframe
+     rlr2nap(id) # Add NAPto dataframe
+  
+  RLRdata.NL <- rbind(RLRdata.NL,df_tmp)
+}
+
+# Compute mean NAP, after 
+meanNAP.NL <- aggregate(NAP ~ Year, RLRdata.NL, mean)
+# filter out non-trusted part (before NAP)
+meanNAP.NL <- filter(meanNAP.NL, Year>=1890)
+meanNAP.NL$name= "Mean"
+
+# Combine dataframes
+# cols <- c("Year","NAP","name")
+# df_combi <- rbind(RLRdata.NL[,cols], meanNAP.NL2[,cols] )
+```
+
+
+```{r}
+
+
+# fig <- plot_ly(df_combi[which(df_combi$name!="Mean"),], x= ~Year, y= ~NAP,
+#         mode = "markers", color = ~name,type="scatter", colors = "Set3") %>%
+#         add_trace(df_combi[which(df_combi$name=="Mean"),], x= ~Year, y= ~NAP, mode = 'lines', type='scatter')
+
+# set colors
+cbp1 <- c("#999999", "#E69F00", "#56B4E9", "#009E73",
+          "#F0E442", "#0072B2", "black", "#D55E00", "#CC79A7")
+
+# create plot
+# p <- ggplot(data=df_combi[which(df_combi$name!="Mean"),], aes(x = Year, y = NAP, color = name)) +
+#   geom_line(data=df_combi[which(df_combi$name=="Mean"),], aes(x = Year, y = NAP)) +
+
+# p <- ggplot(data=RLRdata.NL, aes(x = Year, y = NAP, color = name)) +
+#   geom_point(size = 1) +
+#   scale_color_brewer(palette="Set3") + 
+#   geom_line(data=meanNAP.NL, aes(x = Year, y = NAP)) +
+#   scale_colour_manual(values=cbp1)+
+#   labs(color = "Station" ) +
+#   ylab("Water level [mm] above NAP")+
+#   theme_bw()
+# 
+# # Set plot to plotly
+# fig <- ggplotly(p)
+# fig %>% layout(legend = list(orientation = "v", x = 1, y = 0))
+
+
+
+# create plot
+# p <- ggplot(data=df_combi[which(df_combi$name!="Mean"),], aes(x = Year, y = NAP, color = name)) +
+#   geom_line(data=df_combi[which(df_combi$name=="Mean"),], aes(x = Year, y = NAP)) +
+p <- ggplot(data=RLRdata.NL, aes(x = Year, y = NAP, color = name)) +
+  geom_point(size = 1) +
+  geom_line(data=meanNAP.NL, aes(x = Year, y = NAP)) +
+  scale_colour_manual(values=cbp1)+
+  labs(color = "Station" ) +
+  ylab("Water level [mm] above NAP")+
+  theme_bw() + 
+  theme( legend.title = element_blank() )
+
+# Set plot to plotly
+fig <- ggplotly(p)
+fig %>%
+  add_annotations( text="Station", xref="paper", yref="paper",
+                  x=1.02, xanchor="left",
+                  y=0.8, yanchor="bottom",    # Same y as legend below
+                  legendtitle=TRUE, showarrow=FALSE ) %>%
+  layout( legend=list(y=0.8, yanchor="top" ) )
+
+```
+
+
+
+# Thank you for your attention
+
+
